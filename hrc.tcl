@@ -7,9 +7,9 @@
 # firstFrame lastFrame step: user-specified trajectory part
 # cutoff: the cutoff used to determine a bond
 # selection: the atoms that will be involved in the calculation
-# example: source hrc.tcl; hrc test.pdb test.pdb bond 0 9 1 2.0 {name C}
+# example: source hrc.tcl; hrc test.pdb test.pdb ring 0 9 1 1.6 {name C}
 
-# NOTE: for the bond mode, it calculates all bonds information in the selection, not only appear in rings.
+# NOTE: for the bond mode, it calculates all bonds information in the selection, not only these appear in rings.
 
 proc hrc {file_1 file_2 mode firstFrame lastFrame step cutoff selection} {
 
@@ -27,8 +27,8 @@ puts $logfile "Command: hrc $file_1 $file_2 $mode $firstFrame $lastFrame $step $
 set frameNum [molinfo top get numframes]
 
 puts "   "
-puts " frameNum = $frameNum"
-puts "frameID  number  frameAveraged"
+puts "frameNum = $frameNum"
+puts "frameID  number  avgRingAreaSingle  avgRingCircularitySingle"
 
 puts $logfile "frameNum= $frameNum"
 puts $logfile "   "
@@ -45,7 +45,7 @@ for {set n 0} {$n < $frameNum} {incr n} {
 	set bondLengthRecordSingle {}
 	set ringAreaRecordSingle {}
 	
-	# update bond connection according to specified cutoff
+	# update bond connection according to user-specified cutoff-----------------------------
 	topo clearbonds
 	foreach element $atomList {
 		set bonded_atoms_sel [atomselect top "$selection and within $cutoff of index $element" frame $n]
@@ -56,6 +56,7 @@ for {set n 0} {$n < $frameNum} {incr n} {
 			}
 		}	
 	}
+	#---------------------------------------------------------------------------------------
 		
 	set bondList [topo getbondlist -sel $atomsel]
 	set bondNumSingle [llength $bondList]
@@ -64,7 +65,7 @@ for {set n 0} {$n < $frameNum} {incr n} {
 	puts $logfile "bondList = "
 	puts $logfile "$bondList"
 	
-	# bond mode~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ start
+	# bond mode --------------------------------------------------------------------------------------- start
 	if {[string equal -nocase $mode bond]} {
 		# set file writing style
 		if {$bondFileStyle == 1} {
@@ -94,44 +95,57 @@ for {set n 0} {$n < $frameNum} {incr n} {
 		puts [format "%-10d %-10d %-10.4f" $frameID $bondNumSingle $avgBondLengthSingle]
 		close $bondLengthAvgFile	
 		close $bondLengthAllFile
-	# bond mode~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ end
-		
-	# ring mode~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ start	
+	# bond mode --------------------------------------------------------------------------------------- end
+	
+	# ring mode --------------------------------------------------------------------------------------- start	
 	} elseif {[string equal -nocase $mode ring]} {
 		# set file writing style
 		if {$ringFileStyle == 1} {
-			set ringAreaAvgFile [open ringAreaAvgFile.dat w]
-			puts $ringAreaAvgFile "#frameID  ringNumSingle  avgRingAreaSingle"
-			set ringAreaAllFile [open ringAreaAllFile.dat w]
+			set ringAvgFile [open ringAvgFile.dat w]
+			puts $ringAvgFile "#frameID  ringNumSingle  avgRingAreaSingle  avgRingCircularitySingle"
+			set ringAllFile [open ringAllFile.dat w]
 			set ringFileStyle 0
-			close $ringAreaAvgFile	
-			close $ringAreaAllFile
+			close $ringAvgFile	
+			close $ringAllFile
 		}
-		set ringAreaAvgFile [open ringAreaAvgFile.dat a]
-		set ringAreaAllFile [open ringAreaAllFile.dat a]
+		set ringAvgFile [open ringAvgFile.dat a]
+		set ringAllFile [open ringAllFile.dat a]
 
 		set ringNumSingle 0
 		set ringListSingle {}
+		set ringListSortedSingle {}
+		
+		# -------------------------------------- start to search the rings
 		foreach element $atomList {
-			# --------------------------------------find the 1st atom of the ring
+			# -------------------------------------- assume the 1st atom of the ring
 			set atom_1_sel [atomselect top "index $element" frame $n]
 			set x1 [$atom_1_sel get x]
 			set y1 [$atom_1_sel get y]
 			set z1 [$atom_1_sel get z]
 			
-			# --------------------------------------find the 2nd and 3rd atoms of the ring
+			# -------------------------------------- search the 2nd and 3rd atoms of the ring
 			set bonded_atoms_list [$atom_1_sel getbonds]
 			set bonded_atoms_list [lindex $bonded_atoms_list 0]
 			
 			set count [llength $bonded_atoms_list]
-			if {$count == 1} {
+			if {$count <= 1} {
 				continue
+				# If count==1, it means this situation cannot form a ring;
+				# only if count==2 or ==3, it has chance to form a ring
 			} elseif {$count == 2 || $count == 3} {
 				set aa [lindex $bonded_atoms_list 0]
 				set bb [lindex $bonded_atoms_list 1]
 				set cc [lindex $bonded_atoms_list 2]
 				set situationList [list [list $aa $bb] [list $bb $cc] [list $aa $cc]]
+				# In this foreach loop, the first atom may bond with 2 or 3 other atoms, so it will have 3 situations;
+				# if there is no cc (count==2), one situation will have two index values, and another
+				# two situations will have an index value and an empty value;
+				# so, for no cc condition, just find and remove the two situations by if continue commands, 
+				# and only consider the left situation which has two index values.
+				# If count==3, all the three situations will be considered by command foreach.
+				# 这确实是个比较烧脑的逻辑 !>_<
 				foreach situation $situationList {
+					set ringDone 0
 					if {[llength [lindex $situation 0]] == 0 || [llength [lindex $situation 1]] == 0} {
 						continue
 					}
@@ -146,10 +160,13 @@ for {set n 0} {$n < $frameNum} {incr n} {
 					set y3 [$atom_3_sel get y]
 					set z3 [$atom_3_sel get z]
 					
-					# --------------------------------------find the 4th atom of the ring
+					# -------------------------------------- search the 4th atom of the ring
 					set bonded_atoms_list [$atom_2_sel getbonds]
 					set bonded_atoms_list [lindex $bonded_atoms_list 0]
+					# "self" is the previous atom, in this context, the first atom which is bonded with atom_2 and atom_3,
+					# because we want to find who are bonded to atom_2, atom_1 must be one, so name it with "self".
 					set self [lsearch $bonded_atoms_list $element]
+					# In "bonded_atoms_list_new", we delete self, so the rest are all new atoms.
 					set bonded_atoms_list_new [lreplace $bonded_atoms_list $self $self]			
 					set count [llength $bonded_atoms_list_new ]
 					if {$count == 0} {
@@ -160,6 +177,7 @@ for {set n 0} {$n < $frameNum} {incr n} {
 						set x4 [$atom_4_sel get x]
 						set y4 [$atom_4_sel get y]
 						set z4 [$atom_4_sel get z]
+						# Using the angle to determine is atom_4 is within the ring
 						set angle_ref [angle $x1 $y1 $z1 $x3 $y3 $z3 $x2 $y2 $z2]
 						set angle_4 [angle $x1 $y1 $z1 $x3 $y3 $z3 $x4 $y4 $z4]
 						if {$angle_4 > $angle_ref} {
@@ -179,6 +197,7 @@ for {set n 0} {$n < $frameNum} {incr n} {
 						
 						set angle_40 [angle $x1 $y1 $z1 $x3 $y3 $z3 $x40 $y40 $z40]
 						set angle_41 [angle $x1 $y1 $z1 $x3 $y3 $z3 $x41 $y41 $z41]
+						# for count==2 condition, there must be one atom the ring atom and another one not
 						if {$angle_40 < $angle_41} {
 							set atom_4_id $atom_40_id
 						} else {
@@ -191,6 +210,7 @@ for {set n 0} {$n < $frameNum} {incr n} {
 					}
 					
 					# --------------------------------------find the 5th atom of the ring
+					# Same precedure with atom_4.
 					set bonded_atoms_list [$atom_3_sel getbonds]
 					set bonded_atoms_list [lindex $bonded_atoms_list 0]		
 					set self [lsearch $bonded_atoms_list $element]
@@ -226,7 +246,7 @@ for {set n 0} {$n < $frameNum} {incr n} {
 						if {$angle_50 < $angle_51} {
 							set atom_5_id $atom_50_id
 						} else {
-							set atom_5_id $atom_51_id	
+							set atom_5_id $atom_51_id
 						}
 						set atom_5_sel [atomselect top "index $atom_5_id" frame $n] 
 						set x5 [$atom_5_sel get x]
@@ -234,7 +254,7 @@ for {set n 0} {$n < $frameNum} {incr n} {
 						set z5 [$atom_5_sel get z]
 					}
 				
-					# --------------------------------------find the 6th atom of a ring
+					# -------------------------------------- search the 6th atom of a ring
 					set bonded_atoms_list_4 [$atom_4_sel getbonds]
 					set bonded_atoms_list_4 [lindex $bonded_atoms_list_4 0]
 					set self [lsearch $bonded_atoms_list_4 $atom_2_id]
@@ -247,6 +267,7 @@ for {set n 0} {$n < $frameNum} {incr n} {
 					set bonded_atoms_list_5_new [lreplace $bonded_atoms_list_5 $self $self]
 					set count_5 [llength $bonded_atoms_list_5_new]
 					
+					# 
 					if {$count_4>0 && $count_5>0} {
 						set FLAG 0
 						foreach index_4 $bonded_atoms_list_4_new {
@@ -256,36 +277,42 @@ for {set n 0} {$n < $frameNum} {incr n} {
 								foreach index_5 $bonded_atoms_list_5_new {
 									 if {$index_4 == $index_5} {
 										set FLAG 1
+										set ringDone 1
+										# When FLAG==1, index_4 or index_5 is atom_6.
 										set atom_6_id $index_4
 										set atom_6_sel [atomselect top "index $atom_6_id" frame $n] 
 										set x6 [$atom_6_sel get x]
 										set y6 [$atom_6_sel get y]
 										set z6 [$atom_6_sel get z]
 										break
+									} else {
+										continue
 									}
-								}					
+								}; # foreach index_5 $bonded_atoms_list_5_new					
 							}
-						}
+						}; # foreach index_4 $bonded_atoms_list_4_new
 					} else {
-						continue
+						continue; # foreach situation $situationList; continue to next situation loop	
 					}
+					# 
 					
-					# NOTE: in the same frame, loop all atoms and find rings, there would be many overlaps
-					# ringListSingle: store all found ring_atom_index in the original atom order, even overlap
-					lappend ringListSingle [list $element $atom_2_id $atom_4_id $atom_6_id $atom_5_id $atom_3_id]
-					# ringListSingle: store all found ring_atom_index in the sorted atom order, even overlap
-					lappend ringListSortedSingle [lsort -integer [list $element $atom_2_id $atom_4_id $atom_6_id $atom_5_id $atom_3_id]]
-				} ; # situation loop
-			
-				#if {$count == 2} {
-					#break; # terminate situation loop in the whole foreach loop
-				#}
-				
+					if {$ringDone == 1} {
+						# NOTE: in the same frame, when loop all atoms and search rings, there would be many overlaps
+						# ringListSingle: store all found ring_atom_index in the original atom order, even overlap
+						# note: the indexes are in ring-direction sequence
+						lappend ringListSingle [list $element $atom_2_id $atom_4_id $atom_6_id $atom_5_id $atom_3_id]
+						# ringListSingle: store all found ring_atom_index in the sorted atom order, even overlap
+						lappend ringListSortedSingle [lsort -integer [list $element $atom_2_id $atom_4_id $atom_6_id $atom_5_id $atom_3_id]]
+					}
+
+				} ; # foreach situation $situationList				
 			} ; #  elseif {$count == 2 || $count == 3}
 		} ; # atom loop
 		
+# -----------------------------------------------------------------------------------------------------------------------20240320		
 		set uniqueRingListSingle {}		; # store the unique ring_atom_index in a single frame, taken from the sorted list
 		set uniqueRingAreaSingle {}	; # store the unique ring areas of a frame
+		set uniqueRingCircularitySingle {}	; # store the unique ring circularities of a frame
 		foreach item $ringListSortedSingle {
 			if {$item ni $uniqueRingListSingle} {
 				lappend uniqueRingListSingle $item
@@ -323,16 +350,30 @@ for {set n 0} {$n < $frameNum} {incr n} {
 				set y6 [$atom_6_sel get y]
 				set z6 [$atom_6_sel get z]
 				
+				# calculate the ring area
 				set area_1 [area $x1 $y1 $z1 $x2 $y2 $z2 $x3 $y3 $z3]
 				set area_2 [area $x5 $y5 $z5 $x4 $y4 $z4 $x3 $y3 $z3]
-				set area_3 [area $x1 $y1 $z1 $x6 $y6 $z6 $x5 $y5 $z5]
 				set area_3 [area $x1 $y1 $z1 $x6 $y6 $z6 $x5 $y5 $z5]
 				set area_4 [area $x1 $y1 $z1 $x3 $y3 $z3 $x5 $y5 $z5]
 				set area_ring [expr {$area_1 + $area_2 + $area_3 + $area_4}]
 				
+				# calcualte the ring circularity
+				set bond12 [measure bond [list $atom_1_id $atom_2_id] first $n last $n]
+				set bond23 [measure bond [list $atom_2_id $atom_3_id] first $n last $n]
+				set bond34 [measure bond [list $atom_3_id $atom_4_id] first $n last $n]
+				set bond45 [measure bond [list $atom_4_id $atom_5_id] first $n last $n]
+				set bond56 [measure bond [list $atom_5_id $atom_6_id] first $n last $n]
+				set bond61 [measure bond [list $atom_6_id $atom_1_id] first $n last $n]
+				set perimeter [expr {$bond12+$bond23+$bond34+$bond45+$bond56+$bond61}]
+				set circularity [expr {4*3.141593*$area_ring/$perimeter/$perimeter}]
+				set ringX [expr {($x1+$x2+$x3+$x4+$x5+$x6)/6.0}]
+				set ringY [expr {($y1+$y2+$y3+$y4+$y5+$y6)/6.0}]
+				set ringZ [expr {($z1+$z2+$z3+$z4+$z5+$z6)/6.0}]
+				
 				lappend uniqueRingAreaSingle $area_ring
-				puts $ringAreaAllFile [format "%-10d %-10d %-10d %-10d %-10d %-10d %-10d %-10.4f" \
-					 $frameID $atom_1_id $atom_2_id $atom_3_id $atom_4_id $atom_5_id $atom_6_id $area_ring ]
+				lappend uniqueRingCircularitySingle $circularity
+				puts $ringAllFile [format "frameID %-8d index %-8d %-8d %-8d %-8d %-8d %-8d area  %-8.4f circularity  %-8.4f centerXYZ  %-6.2f %-6.2f %-6.2f" \
+					  $frameID $atom_1_id $atom_2_id $atom_3_id $atom_4_id $atom_5_id $atom_6_id $area_ring $circularity $ringX $ringY $ringZ]
 			}
 		}
 		
@@ -344,11 +385,17 @@ for {set n 0} {$n < $frameNum} {incr n} {
 			set ringAreaSumSingle [expr {$ringAreaSumSingle + $element}]
 		}
 		
+		set ringCircularitySumSingle 0
+		foreach element $uniqueRingCircularitySingle {
+			set ringCircularitySumSingle [expr {$ringCircularitySumSingle + $element}]
+		}
+		
 		set avgRingAreaSingle [expr {$ringAreaSumSingle/$ringNumSingle}]
-		puts $ringAreaAvgFile [format "%-10d %-10d %-10.4f" $frameID $ringNumSingle $avgRingAreaSingle]
-		puts [format "%-10d %-10d %-10.4f" $frameID $ringNumSingle $avgRingAreaSingle]	
-		close $ringAreaAvgFile	
-		close $ringAreaAllFile
+		set avgRingCircularitySingle [expr {$ringCircularitySumSingle/$ringNumSingle}]
+		puts $ringAvgFile [format "%-8d %-8d %-8.4f %-8.4f" $frameID $ringNumSingle $avgRingAreaSingle $avgRingCircularitySingle]
+		puts [format "%-8d %-8d %-8.4f %-8.4f" $frameID $ringNumSingle $avgRingAreaSingle $avgRingCircularitySingle]	
+		close $ringAvgFile	
+		close $ringAllFile
 	} ; # ring mode~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ end
 
 } ; # frame loop end
