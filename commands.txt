@@ -1,0 +1,5 @@
+# for results in folder Figure_6A_1.6
+source hrc.tcl; hrc Figure_6.pdb Figure_6.pdb ring 0 5 1 1.6 {name C}
+
+# for results in folder Figure_6C_1.5
+source hrc.tcl; hrc Figure_6.pdb Figure_6.pdb ring 0 5 1 1.5 {name C}
